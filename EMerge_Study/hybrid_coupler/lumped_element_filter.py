@@ -97,10 +97,10 @@ model.mesher.set_domain_size(air, 5 * mm)
 model.generate_mesh()
 
 # --- EMerge viewer ---
-#model.view(plot_mesh=True)
+model.view(plot_mesh=True)
 
 # --- Gmsh viewer ---
-model.view(use_gmsh=True, plot_mesh=True, volume_mesh=False)
+#model.view(use_gmsh=True, plot_mesh=True, volume_mesh=False)
 exit()
 
 # --- Boundary conditions -----------------------------------------------

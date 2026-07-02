@@ -120,6 +120,7 @@ class RawDataGeneratorGUI:
         ttk.Entry(output, textvariable=self.var_seed, width=12).grid(row=1, column=1, sticky="w", padx=4, pady=(6, 0))
         ttk.Checkbutton(output, text="압축 저장", variable=self.var_compressed).grid(row=1, column=2, padx=4)
 
+
         preview = ttk.LabelFrame(
             main,
             text="4. FFT 이전 시간영역 송신·수신 I/Q 파형",

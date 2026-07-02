@@ -1,0 +1,368 @@
+"""Matplotlib으로 재사용 가능한 3D 쿼드콥터 드론 아이콘을 생성합니다.
+
+독립 실행하면 드론의 방향과 프로펠러 위상을 조절할 수 있는 미리보기 GUI가
+열립니다. 다른 코드에서는 ``draw_3d_drone(ax, position=...)``을 호출하면 됩니다.
+"""
+
+import math
+import tkinter as tk
+from tkinter import ttk
+
+import matplotlib
+import numpy as np
+from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
+from matplotlib.figure import Figure
+
+
+matplotlib.rcParams["font.family"] = ["Malgun Gothic", "DejaVu Sans"]
+matplotlib.rcParams["axes.unicode_minus"] = False
+
+
+def _rotate_xy(x, y, yaw_rad):
+    """로컬 X-Y 좌표를 +Y축 기준 yaw 각도만큼 회전합니다."""
+    x_rotated = math.cos(yaw_rad) * x + math.sin(yaw_rad) * y
+    y_rotated = -math.sin(yaw_rad) * x + math.cos(yaw_rad) * y
+    return x_rotated, y_rotated
+
+
+def _draw_vertical_cylinder(ax, center, radius, height, color):
+    """모터에 사용할 작은 수직 원통을 그립니다."""
+    center_x, center_y, center_z = center
+    theta = np.linspace(0.0, 2.0 * np.pi, 36)
+    z_values = np.array([center_z - height / 2.0, center_z + height / 2.0])
+    theta_grid, z_grid = np.meshgrid(theta, z_values)
+
+    x_grid = center_x + radius * np.cos(theta_grid)
+    y_grid = center_y + radius * np.sin(theta_grid)
+    ax.plot_surface(
+        x_grid,
+        y_grid,
+        z_grid,
+        color=color,
+        linewidth=0,
+        shade=True,
+    )
+
+    # 모터 윗면을 얇은 원판으로 표현합니다.
+    radial = np.linspace(0.0, radius, 8)
+    theta_cap, radial_cap = np.meshgrid(theta, radial)
+    ax.plot_surface(
+        center_x + radial_cap * np.cos(theta_cap),
+        center_y + radial_cap * np.sin(theta_cap),
+        np.full_like(theta_cap, center_z + height / 2.0),
+        color="#263238",
+        linewidth=0,
+        shade=True,
+    )
+
+
+def _draw_propeller(ax, center, radius, phase_rad, color):
+    """모터 위에 테두리 원과 교차 블레이드를 그립니다."""
+    center = np.asarray(center, dtype=float)
+    theta = np.linspace(0.0, 2.0 * np.pi, 96)
+
+    # 반투명 회전 원판은 프로펠러의 회전 영역을 나타냅니다.
+    radial = np.linspace(0.0, radius, 10)
+    theta_grid, radial_grid = np.meshgrid(theta, radial)
+    ax.plot_surface(
+        center[0] + radial_grid * np.cos(theta_grid),
+        center[1] + radial_grid * np.sin(theta_grid),
+        np.full_like(theta_grid, center[2]),
+        color=color,
+        alpha=0.10,
+        linewidth=0,
+        shade=False,
+    )
+    ax.plot(
+        center[0] + radius * np.cos(theta),
+        center[1] + radius * np.sin(theta),
+        np.full_like(theta, center[2]),
+        color=color,
+        linewidth=0.8,
+        alpha=0.65,
+    )
+
+    # 두 개의 긴 블레이드를 서로 직교하도록 배치합니다.
+    for blade_offset in (0.0, np.pi / 2.0):
+        blade_angle = phase_rad + blade_offset
+        dx = radius * math.cos(blade_angle)
+        dy = radius * math.sin(blade_angle)
+        ax.plot(
+            [center[0] - dx, center[0] + dx],
+            [center[1] - dy, center[1] + dy],
+            [center[2], center[2]],
+            color=color,
+            linewidth=3.0,
+            solid_capstyle="round",
+            zorder=8,
+        )
+
+    ax.scatter(
+        center[0],
+        center[1],
+        center[2],
+        s=18,
+        color="#f5f5f5",
+        edgecolor="#263238",
+        zorder=9,
+    )
+
+
+def draw_3d_drone(
+    ax,
+    position=(0.0, 0.0, 0.0),
+    scale=1.0,
+    yaw_deg=0.0,
+    rotor_phase_deg=0.0,
+    body_color="#37474f",
+):
+    """지정한 3D 축에 쿼드콥터 드론 아이콘을 그립니다.
+
+    Args:
+        ax: Matplotlib 3D Axes 객체.
+        position: 드론 동체 중심의 ``(x, y, z)`` 위치.
+        scale: 드론 전체 크기 배율.
+        yaw_deg: +Y축 기준 드론 전방의 수평 방향 [deg].
+        rotor_phase_deg: 프로펠러 블레이드의 표시 위상 [deg].
+        body_color: 중앙 동체 색상.
+
+    Returns:
+        동체 위치, 전방 벡터 및 모터 중심 좌표가 담긴 사전.
+    """
+    if scale <= 0:
+        raise ValueError("scale은 0보다 커야 합니다.")
+
+    position = np.asarray(position, dtype=float)
+    if position.shape != (3,):
+        raise ValueError("position은 (x, y, z) 좌표 세 개여야 합니다.")
+
+    yaw_rad = math.radians(yaw_deg)
+    rotor_phase_rad = math.radians(rotor_phase_deg)
+
+    # 타원체 동체 표면을 생성합니다.
+    longitude = np.linspace(0.0, 2.0 * np.pi, 48)
+    latitude = np.linspace(0.0, np.pi, 24)
+    longitude_grid, latitude_grid = np.meshgrid(longitude, latitude)
+
+    body_x_local = 0.46 * scale * np.cos(longitude_grid) * np.sin(latitude_grid)
+    body_y_local = 0.62 * scale * np.sin(longitude_grid) * np.sin(latitude_grid)
+    body_z_local = 0.20 * scale * np.cos(latitude_grid)
+
+    body_x = (
+        math.cos(yaw_rad) * body_x_local
+        + math.sin(yaw_rad) * body_y_local
+        + position[0]
+    )
+    body_y = (
+        -math.sin(yaw_rad) * body_x_local
+        + math.cos(yaw_rad) * body_y_local
+        + position[1]
+    )
+    body_z = body_z_local + position[2]
+
+    ax.plot_surface(
+        body_x,
+        body_y,
+        body_z,
+        color=body_color,
+        edgecolor="#263238",
+        linewidth=0.18,
+        shade=True,
+    )
+
+    # X형 암 끝의 네 모터 위치를 로컬 좌표로 정의합니다.
+    arm_length = 1.05 * scale
+    motor_z = position[2] + 0.04 * scale
+    motor_centers = []
+    arm_colors = ("#00acc1", "#00acc1", "#ff7043", "#ff7043")
+
+    for index, arm_angle_deg in enumerate((45.0, 135.0, 225.0, 315.0)):
+        arm_angle = math.radians(arm_angle_deg)
+        local_x = arm_length * math.sin(arm_angle)
+        local_y = arm_length * math.cos(arm_angle)
+        rotated_x, rotated_y = _rotate_xy(local_x, local_y, yaw_rad)
+
+        motor_center = np.array(
+            [
+                position[0] + rotated_x,
+                position[1] + rotated_y,
+                motor_z,
+            ]
+        )
+        motor_centers.append(motor_center)
+
+        # 중앙 동체와 모터를 연결하는 암입니다.
+        ax.plot(
+            [position[0], motor_center[0]],
+            [position[1], motor_center[1]],
+            [position[2], motor_center[2]],
+            color=arm_colors[index],
+            linewidth=5.0 * scale,
+            solid_capstyle="round",
+            zorder=3,
+        )
+
+        _draw_vertical_cylinder(
+            ax,
+            motor_center,
+            radius=0.13 * scale,
+            height=0.18 * scale,
+            color="#546e7a",
+        )
+
+        # 인접 로터가 반대 방향으로 회전하는 모습을 위상으로 구분합니다.
+        phase_direction = 1.0 if index % 2 == 0 else -1.0
+        propeller_center = motor_center + np.array([0.0, 0.0, 0.12 * scale])
+        _draw_propeller(
+            ax,
+            propeller_center,
+            radius=0.46 * scale,
+            phase_rad=phase_direction * rotor_phase_rad + arm_angle,
+            color=arm_colors[index],
+        )
+
+    # +Y 로컬 방향이 드론의 전방임을 노란 화살표로 표시합니다.
+    nose_x, nose_y = _rotate_xy(0.0, 0.82 * scale, yaw_rad)
+    nose = position + np.array([nose_x, nose_y, 0.10 * scale])
+    ax.plot(
+        [position[0], nose[0]],
+        [position[1], nose[1]],
+        [position[2] + 0.10 * scale, nose[2]],
+        color="#ffd600",
+        linewidth=4.0,
+        zorder=7,
+    )
+    ax.scatter(
+        nose[0],
+        nose[1],
+        nose[2],
+        s=34 * scale,
+        marker="^",
+        color="#ffd600",
+        edgecolor="#5d4037",
+        zorder=8,
+    )
+
+    # 간단한 착륙 다리를 동체 아래에 추가합니다.
+    for local_x in (-0.28 * scale, 0.28 * scale):
+        top_x, top_y = _rotate_xy(local_x, 0.0, yaw_rad)
+        foot_x, foot_y = _rotate_xy(local_x, -0.12 * scale, yaw_rad)
+        ax.plot(
+            [position[0] + top_x, position[0] + foot_x],
+            [position[1] + top_y, position[1] + foot_y],
+            [position[2] - 0.12 * scale, position[2] - 0.42 * scale],
+            color="#263238",
+            linewidth=2.2,
+        )
+
+    forward_x, forward_y = _rotate_xy(0.0, 1.0, yaw_rad)
+    return {
+        "position": position,
+        "forward": np.array([forward_x, forward_y, 0.0]),
+        "motor_centers": np.asarray(motor_centers),
+    }
+
+
+class DroneIconPreview:
+    """3D 드론 아이콘의 방향과 프로펠러 위상을 확인하는 GUI."""
+
+    def __init__(self, root):
+        self.root = root
+        self.root.title("3D Drone Icon Preview")
+
+        self.var_yaw = tk.DoubleVar(value=0.0)
+        self.var_rotor_phase = tk.DoubleVar(value=20.0)
+
+        self.figure = Figure(figsize=(8, 6), dpi=100)
+        self.ax = self.figure.add_subplot(111, projection="3d")
+        self.canvas = FigureCanvasTkAgg(self.figure, master=root)
+        self.canvas.get_tk_widget().pack(
+            side=tk.TOP,
+            fill=tk.BOTH,
+            expand=True,
+            padx=10,
+            pady=(10, 4),
+        )
+
+        self._build_controls()
+        self.redraw()
+
+    def _build_controls(self):
+        panel = ttk.LabelFrame(self.root, text="Drone orientation", padding=10)
+        panel.pack(side=tk.TOP, fill=tk.X, padx=10, pady=(2, 10))
+        panel.columnconfigure(1, weight=1)
+
+        ttk.Label(panel, text="방향 Yaw [-180°~180°]").grid(
+            row=0,
+            column=0,
+            padx=5,
+        )
+        ttk.Scale(
+            panel,
+            from_=-180,
+            to=180,
+            variable=self.var_yaw,
+            command=self.redraw,
+        ).grid(row=0, column=1, sticky="ew", padx=5)
+
+        ttk.Label(panel, text="프로펠러 위상 [0°~180°]").grid(
+            row=1,
+            column=0,
+            padx=5,
+        )
+        ttk.Scale(
+            panel,
+            from_=0,
+            to=180,
+            variable=self.var_rotor_phase,
+            command=self.redraw,
+        ).grid(row=1, column=1, sticky="ew", padx=5)
+
+        self.status = ttk.Label(panel, text="")
+        self.status.grid(row=2, column=0, columnspan=2, sticky="w", pady=(8, 0))
+
+    def redraw(self, _value=None):
+        yaw = float(self.var_yaw.get())
+        rotor_phase = float(self.var_rotor_phase.get())
+
+        self.ax.clear()
+        draw_3d_drone(
+            self.ax,
+            position=(0.0, 0.0, 1.0),
+            scale=1.0,
+            yaw_deg=yaw,
+            rotor_phase_deg=rotor_phase,
+        )
+
+        self.ax.set_xlim(-2.0, 2.0)
+        self.ax.set_ylim(-2.0, 2.0)
+        self.ax.set_zlim(0.0, 2.5)
+        self.ax.set_box_aspect((4.0, 4.0, 2.5))
+        self.ax.set_xlabel("X")
+        self.ax.set_ylabel("Y")
+        self.ax.set_zlabel("Z")
+        self.ax.set_title("3D Quadcopter Drone Icon")
+        self.ax.view_init(elev=25, azim=-55)
+        self.ax.grid(True, alpha=0.25)
+        self.figure.tight_layout()
+        self.canvas.draw_idle()
+
+        self.status.config(
+            text=f"Yaw={yaw:.1f}°   Rotor phase={rotor_phase:.1f}°"
+        )
+
+
+def main():
+    root = tk.Tk()
+    try:
+        ttk.Style().theme_use("vista")
+    except tk.TclError:
+        pass
+
+    DroneIconPreview(root)
+    root.minsize(780, 700)
+    root.mainloop()
+
+
+if __name__ == "__main__":
+    main()

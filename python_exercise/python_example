@@ -1,0 +1,11 @@
+import turtle
+t = turtle.Turtle()
+t. shape("turtle")
+
+size = int(input("Enter the size of the turtle: "))
+
+t.forward(size)
+t.right(90)
+t.forward(size)
+t.right(90)
+

@@ -1,0 +1,351 @@
+"""Matplotlib으로 재사용 가능한 3D 레이더 아이콘을 생성하는 코드.
+
+이 파일은 독립 실행 시 미리보기 GUI를 표시합니다. 다른 코드에서는
+``draw_3d_radar(ax, ...)``를 호출하여 기존 3D 축에 레이더를 그릴 수 있습니다.
+"""
+
+import math
+import tkinter as tk
+from tkinter import ttk
+
+import matplotlib
+import numpy as np
+from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
+from matplotlib.figure import Figure
+
+
+matplotlib.rcParams["font.family"] = ["Malgun Gothic", "DejaVu Sans"]
+matplotlib.rcParams["axes.unicode_minus"] = False
+
+
+def _cylinder_mesh(radius, z_bottom, z_top, center_x=0.0, center_y=0.0):
+    """수직 원통의 옆면 좌표를 반환합니다."""
+    theta = np.linspace(0.0, 2.0 * np.pi, 48)
+    z_values = np.array([z_bottom, z_top])
+    theta_grid, z_grid = np.meshgrid(theta, z_values)
+    x_grid = center_x + radius * np.cos(theta_grid)
+    y_grid = center_y + radius * np.sin(theta_grid)
+    return x_grid, y_grid, z_grid
+
+
+def _direction_basis(azimuth_deg, elevation_deg):
+    """레이더 지향 벡터와 안테나 면의 직교 기저 벡터를 계산합니다."""
+    azimuth = math.radians(azimuth_deg)
+    elevation = math.radians(elevation_deg)
+
+    # +Y축을 방위각 0°, X-Y 평면을 고각 0°로 사용합니다.
+    direction = np.array(
+        [
+            math.sin(azimuth) * math.cos(elevation),
+            math.cos(azimuth) * math.cos(elevation),
+            math.sin(elevation),
+        ]
+    )
+    right = np.array([math.cos(azimuth), -math.sin(azimuth), 0.0])
+    up = np.cross(right, direction)
+    up /= np.linalg.norm(up)
+    return direction, right, up
+
+
+def _draw_cylinder(ax, radius, z_bottom, z_top, color, alpha=1.0):
+    """지정한 3D 축에 원통형 부품을 그립니다."""
+    x_grid, y_grid, z_grid = _cylinder_mesh(radius, z_bottom, z_top)
+    ax.plot_surface(
+        x_grid,
+        y_grid,
+        z_grid,
+        color=color,
+        alpha=alpha,
+        linewidth=0,
+        shade=True,
+    )
+
+    theta = np.linspace(0.0, 2.0 * np.pi, 64)
+    for z_value in (z_bottom, z_top):
+        ax.plot(
+            radius * np.cos(theta),
+            radius * np.sin(theta),
+            np.full_like(theta, z_value),
+            color="#263238",
+            linewidth=0.8,
+        )
+
+
+def _draw_radar_beam(ax, origin, direction, right, up, scale):
+    """안테나 앞쪽에 투명한 3D 탐지 빔을 그립니다."""
+    beam_length = 3.2 * scale
+    beam_radius = 1.15 * scale
+    theta = np.linspace(0.0, 2.0 * np.pi, 36)
+    radial_steps = np.linspace(0.0, 1.0, 16)
+    theta_grid, radial_grid = np.meshgrid(theta, radial_steps)
+
+    points = (
+        origin[:, None, None]
+        + beam_length * radial_grid[None, :, :] * direction[:, None, None]
+        + beam_radius
+        * radial_grid[None, :, :]
+        * (
+            np.cos(theta_grid)[None, :, :] * right[:, None, None]
+            + np.sin(theta_grid)[None, :, :] * up[:, None, None]
+        )
+    )
+
+    ax.plot_surface(
+        points[0],
+        points[1],
+        points[2],
+        color="#29b6f6",
+        alpha=0.10,
+        linewidth=0,
+        shade=False,
+    )
+
+    # 빔의 중심선과 외곽선 일부를 표시해 방향을 명확히 합니다.
+    beam_end = origin + beam_length * direction
+    ax.plot(
+        [origin[0], beam_end[0]],
+        [origin[1], beam_end[1]],
+        [origin[2], beam_end[2]],
+        color="#0288d1",
+        linestyle="--",
+        linewidth=1.4,
+    )
+
+
+def draw_3d_radar(
+    ax,
+    position=(0.0, 0.0, 0.0),
+    scale=1.0,
+    azimuth_deg=0.0,
+    elevation_deg=15.0,
+    show_beam=True,
+):
+    """3D 축에 받침대와 포물면 안테나로 구성된 레이더를 그립니다.
+
+    Args:
+        ax: Matplotlib 3D Axes 객체.
+        position: 레이더 바닥 중심의 ``(x, y, z)`` 위치.
+        scale: 전체 아이콘 크기 배율.
+        azimuth_deg: +Y축 기준 수평 지향각 [deg].
+        elevation_deg: X-Y 평면 기준 수직 지향각 [deg].
+        show_beam: True이면 안테나 앞쪽 탐지 빔을 표시합니다.
+    """
+    if scale <= 0:
+        raise ValueError("scale은 0보다 커야 합니다.")
+
+    position = np.asarray(position, dtype=float)
+    if position.shape != (3,):
+        raise ValueError("position은 (x, y, z) 좌표 세 개여야 합니다.")
+
+    # 레이더 부품을 원점에서 만든 후 position만큼 이동하기 위해 임시 축 변환 대신
+    # 각 부품 좌표에 위치 오프셋을 직접 더합니다.
+    px, py, pz = position
+
+    # 원통 그리기 함수는 원점을 기준으로 하므로, 위치 이동이 필요한 축에서는
+    # 생성한 surface 좌표를 직접 사용합니다.
+    def draw_shifted_cylinder(radius, z_bottom, z_top, color):
+        x_grid, y_grid, z_grid = _cylinder_mesh(
+            radius,
+            pz + z_bottom,
+            pz + z_top,
+            px,
+            py,
+        )
+        ax.plot_surface(
+            x_grid,
+            y_grid,
+            z_grid,
+            color=color,
+            linewidth=0,
+            shade=True,
+        )
+
+    # 하부 회전 베이스, 상부 턴테이블, 마스트를 순서대로 배치합니다.
+    draw_shifted_cylinder(0.72 * scale, 0.00, 0.30 * scale, "#455a64")
+    draw_shifted_cylinder(0.55 * scale, 0.30 * scale, 0.52 * scale, "#78909c")
+    draw_shifted_cylinder(0.16 * scale, 0.52 * scale, 1.45 * scale, "#37474f")
+
+    direction, right, up = _direction_basis(azimuth_deg, elevation_deg)
+    pivot = position + np.array([0.0, 0.0, 1.45 * scale])
+
+    # 포물면 접시 안테나: 중심축은 direction, 접시 면은 right/up 방향입니다.
+    rho = np.linspace(0.0, 1.0, 24)
+    phi = np.linspace(0.0, 2.0 * np.pi, 56)
+    rho_grid, phi_grid = np.meshgrid(rho, phi)
+    dish_radius = 0.85 * scale
+    dish_depth = 0.28 * scale
+
+    dish_points = (
+        pivot[:, None, None]
+        - dish_depth * rho_grid[None, :, :] ** 2 * direction[:, None, None]
+        + dish_radius
+        * rho_grid[None, :, :]
+        * (
+            np.cos(phi_grid)[None, :, :] * right[:, None, None]
+            + np.sin(phi_grid)[None, :, :] * up[:, None, None]
+        )
+    )
+    ax.plot_surface(
+        dish_points[0],
+        dish_points[1],
+        dish_points[2],
+        color="#cfd8dc",
+        edgecolor="#607d8b",
+        linewidth=0.22,
+        alpha=0.98,
+        shade=True,
+    )
+
+    # 접시 안테나의 외곽 테두리입니다.
+    rim_phi = np.linspace(0.0, 2.0 * np.pi, 120)
+    rim_center = pivot - dish_depth * direction
+    rim_points = (
+        rim_center[:, None]
+        + dish_radius
+        * (
+            np.cos(rim_phi)[None, :] * right[:, None]
+            + np.sin(rim_phi)[None, :] * up[:, None]
+        )
+    )
+    ax.plot(
+        rim_points[0],
+        rim_points[1],
+        rim_points[2],
+        color="#263238",
+        linewidth=2.0,
+    )
+
+    # 접시 중심 앞쪽에 피드 암과 피드 혼을 표시합니다.
+    feed_point = pivot + 0.62 * scale * direction
+    ax.plot(
+        [pivot[0], feed_point[0]],
+        [pivot[1], feed_point[1]],
+        [pivot[2], feed_point[2]],
+        color="#ff8f00",
+        linewidth=2.5,
+    )
+    ax.scatter(
+        feed_point[0],
+        feed_point[1],
+        feed_point[2],
+        s=42 * scale,
+        color="#ff6f00",
+        edgecolor="#4e342e",
+        zorder=8,
+    )
+
+    if show_beam:
+        beam_origin = pivot + 0.10 * scale * direction
+        _draw_radar_beam(ax, beam_origin, direction, right, up, scale)
+
+    return {
+        "position": position,
+        "pivot": pivot,
+        "direction": direction,
+        "feed_point": feed_point,
+    }
+
+
+class RadarIconPreview:
+    """3D 레이더 아이콘의 지향각을 확인하는 미리보기 GUI."""
+
+    def __init__(self, root):
+        self.root = root
+        self.root.title("3D Radar Icon Preview")
+
+        self.var_azimuth = tk.DoubleVar(value=0.0)
+        self.var_elevation = tk.DoubleVar(value=15.0)
+        self.var_beam = tk.BooleanVar(value=True)
+
+        self.figure = Figure(figsize=(8, 6), dpi=100)
+        self.ax = self.figure.add_subplot(111, projection="3d")
+        self.canvas = FigureCanvasTkAgg(self.figure, master=root)
+        self.canvas.get_tk_widget().pack(
+            side=tk.TOP,
+            fill=tk.BOTH,
+            expand=True,
+            padx=10,
+            pady=(10, 4),
+        )
+
+        self._build_controls()
+        self.redraw()
+
+    def _build_controls(self):
+        panel = ttk.LabelFrame(self.root, text="Radar orientation", padding=10)
+        panel.pack(side=tk.TOP, fill=tk.X, padx=10, pady=(2, 10))
+        panel.columnconfigure(1, weight=1)
+
+        ttk.Label(panel, text="수평각 [-50°~50°]").grid(row=0, column=0, padx=5)
+        ttk.Scale(
+            panel,
+            from_=-50,
+            to=50,
+            variable=self.var_azimuth,
+            command=self.redraw,
+        ).grid(row=0, column=1, sticky="ew", padx=5)
+
+        ttk.Label(panel, text="수직각 [0°~50°]").grid(row=1, column=0, padx=5)
+        ttk.Scale(
+            panel,
+            from_=0,
+            to=50,
+            variable=self.var_elevation,
+            command=self.redraw,
+        ).grid(row=1, column=1, sticky="ew", padx=5)
+
+        ttk.Checkbutton(
+            panel,
+            text="탐지 빔 표시",
+            variable=self.var_beam,
+            command=self.redraw,
+        ).grid(row=0, column=2, rowspan=2, padx=10)
+
+        self.status = ttk.Label(panel, text="")
+        self.status.grid(row=2, column=0, columnspan=3, sticky="w", pady=(8, 0))
+
+    def redraw(self, _value=None):
+        azimuth = float(self.var_azimuth.get())
+        elevation = float(self.var_elevation.get())
+
+        self.ax.clear()
+        draw_3d_radar(
+            self.ax,
+            scale=1.0,
+            azimuth_deg=azimuth,
+            elevation_deg=elevation,
+            show_beam=self.var_beam.get(),
+        )
+
+        self.ax.set_xlim(-4.0, 4.0)
+        self.ax.set_ylim(-1.5, 5.0)
+        self.ax.set_zlim(0.0, 5.0)
+        self.ax.set_box_aspect((8.0, 6.5, 5.0))
+        self.ax.set_xlabel("X")
+        self.ax.set_ylabel("Y")
+        self.ax.set_zlabel("Z")
+        self.ax.set_title("3D Radar Icon")
+        self.ax.view_init(elev=24, azim=-58)
+        self.ax.grid(True, alpha=0.25)
+        self.figure.tight_layout()
+        self.canvas.draw_idle()
+
+        self.status.config(
+            text=f"수평각={azimuth:.1f}°   수직각={elevation:.1f}°"
+        )
+
+
+def main():
+    root = tk.Tk()
+    try:
+        ttk.Style().theme_use("vista")
+    except tk.TclError:
+        pass
+
+    RadarIconPreview(root)
+    root.minsize(780, 700)
+    root.mainloop()
+
+
+if __name__ == "__main__":
+    main()
